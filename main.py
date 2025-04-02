@@ -265,6 +265,7 @@ def download_audio(video_url, output_dir="downloads"):
         # FFmpeg will be available in PATH after installation via render.yaml
         'quiet': True,
         'no_warnings': True,
+        'cookies': os.getenv("YTDLP_COOKIES"),
     }
     try:
         print(f"Attempting to download audio to: {output_path}.mp3")
