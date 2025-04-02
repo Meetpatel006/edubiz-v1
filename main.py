@@ -18,6 +18,7 @@ import re # Import regex for cleaning topic names
 import html # Import html module for escaping
 import tempfile
 import json
+import socket
 
 import logging
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ from langchain.chains.summarize import load_summarize_chain
 
 # Add tenacity for better retry handling
 from typing import List, Optional
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type, RetryError
 from google.api_core.exceptions import ResourceExhausted
 
 
@@ -51,7 +52,7 @@ INDEX_HTML = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=width, initial-scale=1.0">
     <title>YouTube Transcript Analyzer</title>
     <link rel="stylesheet" href="/style.css">
 </head>
@@ -88,7 +89,7 @@ RESULTS_HTML_TEMPLATE = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=width, initial-scale=1.0">
     <title>Analysis Results</title>
     <link rel="stylesheet" href="/style.css">
 </head>
@@ -538,24 +539,90 @@ async def process_video(video_url: str):
         docs_small = text_splitter_small.create_documents([transcript])
         print(f"Docs for QA: {len(docs_small)}")
 
-        # (g) Setup Vector Store
+        # (g) Setup Vector Store with retry mechanism
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=4, max=10),
+            # Retry on specific connection-related errors including DNS errors
+            retry=retry_if_exception_type((ConnectionError, TimeoutError, socket.gaierror))
+        )
+        def setup_vector_store():
+            import socket
+            from urllib.parse import urlparse
+            try:
+                # Extract hostname from endpoint URL
+                astra_endpoint = ASTRA_DB_ENDPOINT
+                parsed_url = urlparse(astra_endpoint)
+                hostname = parsed_url.hostname
+
+                if not hostname:
+                     raise ValueError("Could not parse hostname from ASTRA_DB_ENDPOINT")
+
+                # Test DNS resolution first - will be retried by tenacity if socket.gaierror occurs
+                print(f"Attempting DNS resolution for {hostname}...")
+                try:
+                    socket.gethostbyname(hostname)
+                    print(f"DNS resolution successful for {hostname}.")
+                except socket.gaierror as dns_err:
+                    print(f"DNS resolution failed: {dns_err}")
+                    raise # Re-raise to trigger retry
+
+                collection_name = f"transcript_{video_id}"
+                print(f"Attempting to connect to Astra DB collection: {collection_name}")
+                # Initialize and return the vector store
+                try:
+                    vstore = AstraDBVectorStore(
+                        embedding=nvidia_embeddings,
+                        collection_name=collection_name,
+                        token=ASTRA_DB_TOKEN,
+                        api_endpoint=astra_endpoint,
+                        namespace="default_keyspace"
+                    )
+                    print("AstraDBVectorStore initialized.")
+                    # Assume initialization success means connection is likely okay for now
+                    return vstore
+                except Exception as db_err:
+                    print(f"Error initializing AstraDBVectorStore: {db_err}")
+                    raise  # Re-raise to trigger retry
+                finally:
+                    print("setup_vector_store finally block executed")
+
+            except Exception as e:
+                # Catch other potential errors during setup attempt
+                print(f"Error during Astra DB setup attempt: {str(e)}")
+                # Reraise for tenacity to retry
+                raise
+
         try:
-            astra_token = ASTRA_DB_TOKEN
-            astra_endpoint = ASTRA_DB_ENDPOINT
-            collection_name = f"transcript_{video_id}"
-            print(f"Connecting to Astra DB collection: {collection_name}")
-            vector_store = AstraDBVectorStore(
-                embedding=nvidia_embeddings, collection_name=collection_name,
-                token=astra_token, api_endpoint=astra_endpoint, namespace="default_keyspace"
-            )
+            # Directly call the function with retry decorator
+            print("Setting up Astra DB Vector Store with retries...")
+            vector_store = setup_vector_store() # Tenacity handles retries internally
+
             print(f"Adding {len(docs_small)} documents to vector store...")
+            # Add documents outside the setup function
             vector_store.add_documents(docs_small)
             print("✅ Documents added successfully.")
             retriever = vector_store.as_retriever(k=4)
             print("✅ Retriever created.")
+
+        except RetryError as e:
+            # This catches the error after all tenacity retries have failed
+            error_msg = f"Connection to Astra DB failed after multiple attempts. Please check your network connection and database configuration (ASTRA_DB_ENDPOINT, ASTRA_DB_TOKEN). Last error detail: {e}"
+            print(f"❌ Error setting up Astra DB Vector Store after retries: {error_msg}")
+            raise HTTPException(status_code=500, detail=error_msg)
         except Exception as e:
-            print(f"❌ Error setting up Astra DB Vector Store: {str(e)}")
-            raise
+            # Catch any other unexpected errors during setup or adding documents
+            error_msg = f"An unexpected error occurred during Astra DB setup or document addition: {str(e)}"
+            print(f"❌ Error setting up Astra DB Vector Store: {error_msg}")
+            # Check for specific error types if needed (e.g., authentication errors)
+            if "authentication failed" in str(e).lower():
+                 error_msg = "Astra DB Authentication failed. Please check your ASTRA_DB_TOKEN."
+            elif "namespace not found" in str(e).lower():
+                 error_msg = "Astra DB Namespace 'default_keyspace' not found. Please check your Astra DB setup."
+            # Add more specific checks if other common errors are expected
+            raise HTTPException(status_code=500, detail=error_msg)
+
+        # (h) is removed as document addition is now outside the setup function
 
         # (i) Setup QA Chain
         system_template_qa = """Given the transcript context, summarize the topic provided in 5 sentences or less. Focus only on relevant information from the context. Context: {context}"""
@@ -631,7 +698,7 @@ async def handle_process(video_url: str = Form(...)):
         # Build HTML content for results
         if results_data:
             for topic in results_data:
-                # Use html.escape for safer HTML escaping
+                # Use html.escape for safer HTML escaping)
                 topic_name_safe = html.escape(topic.get('topic_name', ''))
                 description_safe = html.escape(topic.get('description', ''))
                 # Escape and replace newlines with <br> for the summary
