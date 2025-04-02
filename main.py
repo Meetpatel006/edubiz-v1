@@ -322,10 +322,10 @@ def download_audio(video_url, output_dir=None, storage_client=None):
 
         mp3_path = os.path.join(output_dir, f"{video_id}.mp3")
 
-        # Get temporary cookies file from JSON env variable
+        # Use cookies data from environment variable (deploy on server; discard local cookie file)
         cookies_file = get_temp_cookies_file_from_json()
-
-        # Set up yt_dlp options; add cookiefile if available
+        
+        # Set up yt_dlp options; add cookiefile if available and add custom headers
         output_path = os.path.join(output_dir, f"{video_id}")
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -340,6 +340,7 @@ def download_audio(video_url, output_dir=None, storage_client=None):
             'no_warnings': True,
             'socket_timeout': 60,
             'retries': 3,
+            'addheaders': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         }
         if cookies_file:
             ydl_opts['cookiefile'] = cookies_file
@@ -668,5 +669,6 @@ async def handle_process(video_url: str = Form(...)):
 # --- Main Execution ---
 if __name__ == "__main__":
     # port = int(os.getenv("PORT", 8001))
+    
     print(f"Starting FastAPI server on port {port}...")
     # uvicorn.run(app, host="0.0.0.0", port=port)
