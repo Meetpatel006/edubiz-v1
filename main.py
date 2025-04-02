@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, Response # Added Response for CSS
 from pydantic import BaseModel # For potential request/response models if needed
 import re # Import regex for cleaning topic names
 import html # Import html module for escaping
+import tempfile
 
 # For create_extraction_chain, use this import
 from langchain.chains import create_extraction_chain, RetrievalQA
@@ -240,79 +241,118 @@ if not ASTRA_DB_TOKEN or not ASTRA_DB_ENDPOINT:
 
 aai.settings.api_key = ASSEMBLYAI_API_KEY
 
-def download_audio(video_url, output_dir="downloads"):
-    os.makedirs(output_dir, exist_ok=True)
-    if "v=" in video_url:
-        video_id = video_url.split("v=")[1].split("&")[0]
-    else:
-        video_id = video_url.split("/")[-1].split("?")[0]
-
-    output_path = os.path.join(output_dir, f"{video_id}")
-
-    if os.path.exists(output_path + ".mp3"):
-        print(f"✅ Audio already downloaded: {output_path}.mp3")
-        return output_path + ".mp3"
-
-    ydl_opts = {
-        'format': 'ba/bestaudio',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'outtmpl': output_path,
-        'noplaylist': True,
-        # FFmpeg will be available in PATH after installation via render.yaml
-        'quiet': True,
-        'no_warnings': True,
-        # 'cookies': os.getenv("YTDLP_COOKIES"),
-        'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
-    },
-        
-    }
+def json_to_netscape_cookies(json_cookies, output_file):
+    """
+    Convert a list of JSON cookies to a Netscape-format cookie file.
+    Each cookie should include at least these keys:
+    domain, httpOnly, path, secure, name, and value.
+    Optionally, expirationDate is used if present.
+    """
     try:
-        print(f"Attempting to download audio to: {output_path}.mp3")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            error_occurred = False
-            error_message = "Unknown yt-dlp error"
-            def error_hook(d):
-                nonlocal error_occurred, error_message
-                if d['status'] == 'error':
-                    print(f"DEBUG: yt-dlp reported an error: {d.get('error', 'Unknown error')}")
-                    error_message = d.get('error', 'Unknown error')
-                    error_occurred = True
-                elif d['status'] == 'finished':
-                     print(f"DEBUG: yt-dlp finished processing {d.get('filename')}")
-                elif d['status'] == 'downloading':
-                     pass
+        with open(output_file, 'w') as f:
+            f.write("# Netscape HTTP Cookie File\n")
+            for cookie in json_cookies:
+                required_keys = ["domain", "httpOnly", "path", "secure", "name", "value"]
+                if all(k in cookie for k in required_keys):
+                    domain = cookie["domain"]
+                    # Set domain_specified to TRUE if the domain starts with a dot
+                    domain_specified = "TRUE" if domain.startswith(".") else "FALSE"
+                    http_only = "TRUE" if cookie["httpOnly"] else "FALSE"
+                    secure = "TRUE" if cookie["secure"] else "FALSE"
+                    # Use expirationDate if available, otherwise 0
+                    expiration = str(int(cookie.get("expirationDate", 0)))
+                    # Format: domain, flag, path, secure, expiration, name, value
+                    line = f"{domain}\t{domain_specified}\t{cookie['path']}\t{secure}\t{expiration}\t{cookie['name']}\t{cookie['value']}\n"
+                    f.write(line)
+        return True
+    except Exception as e:
+        logger.error(f"Error converting cookies: {str(e)}")
+        return False
 
-            ydl.add_progress_hook(error_hook)
+def get_temp_cookies_file_from_json():
+    """
+    Reads the cookies JSON from the environment variable YOUTUBE_COOKIES_JSON,
+    converts it to Netscape format, and writes it to a temporary file.
+    Returns the path to the temporary cookies file.
+    """
+    cookies_json = os.getenv("YOUTUBE_COOKIES_JSON")
+    if not cookies_json:
+        logger.warning("No YOUTUBE_COOKIES_JSON found in environment.")
+        return None
+    try:
+        # Parse the JSON string (expecting a JSON array)
+        cookies_data = json.loads(cookies_json)
+    except Exception as e:
+        logger.error(f"Error parsing YOUTUBE_COOKIES_JSON: {str(e)}")
+        return None
+
+    try:
+        temp_file = tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".txt")
+        if json_to_netscape_cookies(cookies_data, temp_file.name):
+            logger.info(f"Temporary cookie file created at {temp_file.name}")
+            return temp_file.name
+        else:
+            logger.error("Failed to create temporary cookie file from JSON cookies.")
+            return None
+    except Exception as e:
+        logger.error(f"Error creating temporary cookie file: {str(e)}")
+        return None
+
+def download_audio(video_url, output_dir=None, storage_client=None):
+    """
+    Downloads the audio of a YouTube video using yt_dlp and the provided cookies.
+    The cookies are loaded from the environment variable (converted from JSON to Netscape format)
+    and used to bypass YouTube's bot detection.
+    """
+    try:
+        if output_dir is None:
+            output_dir = os.path.join(tempfile.gettempdir(), "yt_downloads")
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Extract video ID from the URL
+        if "v=" in video_url:
+            video_id = video_url.split("v=")[1].split("&")[0]
+        else:
+            video_id = video_url.split("/")[-1].split("?")[0]
+
+        mp3_path = os.path.join(output_dir, f"{video_id}.mp3")
+
+        # Get temporary cookies file from JSON env variable
+        cookies_file = get_temp_cookies_file_from_json()
+
+        # Set up yt_dlp options; add cookiefile if available
+        output_path = os.path.join(output_dir, f"{video_id}")
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192'
+            }],
+            'outtmpl': output_path,
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 60,
+            'retries': 3,
+        }
+        if cookies_file:
+            ydl_opts['cookiefile'] = cookies_file
+
+        logger.info(f"🎵 Downloading audio to: {output_path}.mp3")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([video_url])
 
-        if error_occurred:
-             raise Exception(f"yt-dlp failed: {error_message}")
-
         final_path = output_path + ".mp3"
-        if not os.path.exists(final_path):
-            print(f"DEBUG: File not found immediately at {final_path}, waiting...")
-            time.sleep(3)
-            if not os.path.exists(final_path):
-                files_in_dir = []
-                try:
-                    files_in_dir = os.listdir(output_dir)
-                except FileNotFoundError:
-                     print(f"DEBUG: Output directory '{output_dir}' not found.")
-                related_files = [f for f in files_in_dir if video_id in f]
-                print(f"DEBUG: Files found in '{output_dir}' containing video ID '{video_id}': {related_files}")
-                raise FileNotFoundError(f"Failed to create audio file at the expected path after download and wait: {final_path}")
+        if not os.path.exists(final_path) or os.path.getsize(final_path) == 0:
+            raise FileNotFoundError(f"Failed to download a valid audio file at {final_path}")
 
-        print(f"✅ Audio downloaded successfully: {final_path}")
+        logger.info(f"✅ Audio downloaded successfully: {final_path}")
         return final_path
-    except Exception as e:
-        print(f"❌ Error downloading audio: {str(e)}")
-        raise
 
+    except Exception as e:
+        logger.error(f"❌ Error in download_audio: {str(e)}")
+        raise
 def get_or_create_transcript(video_id, audio_path):
     try:
         os.makedirs("transcripts", exist_ok=True)
