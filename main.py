@@ -345,10 +345,19 @@ def download_audio(video_url, output_dir=None, storage_client=None):
         }
         if cookies_file:
             ydl_opts['cookiefile'] = cookies_file
+            logger.info(f"Using cookie file: {cookies_file}")
+        else:
+            logger.warning("No cookie file provided.")
 
+        logger.info(f"yt-dlp options: {ydl_opts}")
         logger.info(f"🎵 Downloading audio to: {output_path}.mp3")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([video_url])
+        except Exception as e:
+            logger.error(f"yt-dlp download error: {e}")
+            logger.error(f"yt-dlp options: {ydl_opts}")
+            raise
 
         final_path = output_path + ".mp3"
         if not os.path.exists(final_path) or os.path.getsize(final_path) == 0:
