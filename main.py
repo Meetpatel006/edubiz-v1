@@ -17,6 +17,11 @@ from pydantic import BaseModel # For potential request/response models if needed
 import re # Import regex for cleaning topic names
 import html # Import html module for escaping
 import tempfile
+import json
+
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # For create_extraction_chain, use this import
 from langchain.chains import create_extraction_chain, RetrievalQA
