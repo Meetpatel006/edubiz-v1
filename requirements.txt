@@ -28,13 +28,6 @@ filetype==1.2.0
 firecrawl==1.15.0
 firecrawl-py==0.0.20
 frozenlist==1.5.0
-google-ai-generativelanguage==0.6.17
-google-api-core==2.24.2
-google-api-python-client==2.166.0
-google-auth==2.38.0
-google-auth-httplib2==0.2.0
-google-generativeai==0.8.4
-googleapis-common-protos==1.69.2
 greenlet==3.1.1
 grpcio==1.71.0
 grpcio-status==1.71.0
