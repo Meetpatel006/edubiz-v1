@@ -24,7 +24,7 @@ A FastAPI application that analyzes YouTube video transcripts using AI to extrac
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/Meetpatel006/edubiz-v1.git
 cd youtube-transcript-analyzer
 ```
 
