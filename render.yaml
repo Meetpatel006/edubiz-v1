@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: youtube-transcript-analyzer
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && sudo apt-get update && sudo apt-get install -y ffmpeg
+    startCommand: uvicorn temp:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: ASTRA_DB_TOKEN
+        sync: false
+      - key: ASTRA_DB_ENDPOINT
+        sync: false
+    autoDeploy: true
